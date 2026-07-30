@@ -79,7 +79,7 @@ async fn main() {
     // Native CORS support out of the box
     let app = Router::new()
         .route("/api/health", get(health_check))
-        .route("/api/negotiate", post(handle_negotiation))
+        .route("/api/negotiate/start", post(handle_negotiation))
         .layer(CorsLayer::permissive()) 
         .with_state(state);
 
@@ -130,3 +130,4 @@ async fn handle_negotiation(
     let response = NegotiationResponse { reply: reply_text };
     (StatusCode::OK, Json(response)).into_response()
 }
+
