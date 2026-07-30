@@ -80,8 +80,9 @@ async fn handle_negotiation(
 
     println!("📨 Sending prompt to Gemini: {}", prompt);
 
+    // Use gemini-2.0-flash-lite which is available and performant
     let url = format!(
-        "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={}",
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key={}",
         state.gemini_api_key
     );
 
