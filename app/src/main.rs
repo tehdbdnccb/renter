@@ -78,6 +78,8 @@ async fn handle_negotiation(
         _ => "Please provide negotiation details with item, initialPrice, and targetPrice.".to_string(),
     };
 
+    println!("📨 Sending prompt to Gemini: {}", prompt);
+
     let url = format!(
         "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={}",
         state.gemini_api_key
@@ -99,22 +101,40 @@ async fn handle_negotiation(
         }
     };
 
-    match res.json::<Value>().await {
+    let status = res.status();
+    let text = match res.text().await {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("❌ Failed to read response body: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"reply": "Failed to read API response"}))).into_response();
+        }
+    };
+
+    println!("📩 Gemini API Response (Status: {}): {}", status, text);
+
+    match serde_json::from_str::<Value>(&text) {
         Ok(gemini_data) => {
+            // Try to extract the text from the response
             let reply_text = gemini_data
                 .get("candidates")
-                .and_then(|c| c.get(0))
+                .and_then(|c| c.as_array())
+                .and_then(|arr| arr.first())
                 .and_then(|c| c.get("content"))
                 .and_then(|c| c.get("parts"))
-                .and_then(|p| p.get(0))
+                .and_then(|p| p.as_array())
+                .and_then(|arr| arr.first())
                 .and_then(|p| p.get("text"))
                 .and_then(|t| t.as_str())
-                .unwrap_or("No response generated from Gemini API");
+                .unwrap_or_else(|| {
+                    eprintln!("❌ Could not extract text from response: {}", gemini_data);
+                    "No response generated from Gemini API"
+                });
 
+            println!("✅ Extracted reply: {}", reply_text);
             (StatusCode::OK, Json(json!({"reply": reply_text}))).into_response()
         }
         Err(e) => {
-            eprintln!("❌ Failed to parse Gemini response: {}", e);
+            eprintln!("❌ Failed to parse Gemini response as JSON: {}", e);
             (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"reply": "Failed to parse Gemini response"}))).into_response()
         }
     }
