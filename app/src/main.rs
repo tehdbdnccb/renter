@@ -20,7 +20,11 @@ struct AppState {
 // --- Request/Response Structs ---
 #[derive(Deserialize)]
 struct NegotiationRequest {
-    prompt: String,
+    item: String,
+    #[serde(rename = "initialPrice")]
+    initial_price: u32,
+    #[serde(rename = "targetPrice")]
+    target_price: u32,
 }
 
 #[derive(Serialize)]
@@ -99,6 +103,12 @@ async fn handle_negotiation(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<NegotiationRequest>,
 ) -> impl IntoResponse {
+    // Build a prompt for Gemini based on the negotiation parameters
+    let prompt = format!(
+        "I am negotiating to buy a {} currently priced at ${}, and I want to negotiate it down to ${}. Help me with a negotiation strategy.",
+        payload.item, payload.initial_price, payload.target_price
+    );
+
     let url = format!(
         "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={}",
         state.gemini_api_key
@@ -106,7 +116,7 @@ async fn handle_negotiation(
 
     let gemini_req = GeminiRequest {
         contents: vec![GeminiContent {
-            parts: vec![GeminiPart { text: payload.prompt }],
+            parts: vec![GeminiPart { text: prompt }],
         }],
     };
 
