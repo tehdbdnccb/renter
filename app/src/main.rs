@@ -6,7 +6,7 @@ use axum::{
     Json, Router,
 };
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use std::{env, net::SocketAddr, sync::Arc};
 use tower_http::cors::CorsLayer;
 
@@ -15,52 +15,6 @@ use tower_http::cors::CorsLayer;
 struct AppState {
     http_client: Client,
     gemini_api_key: String,
-}
-
-// --- Request/Response Structs ---
-#[derive(Deserialize)]
-struct NegotiationRequest {
-    item: String,
-    #[serde(rename = "initialPrice")]
-    initial_price: u32,
-    #[serde(rename = "targetPrice")]
-    target_price: u32,
-}
-
-#[derive(Serialize)]
-struct NegotiationResponse {
-    reply: String,
-}
-
-// --- Gemini REST API Structs ---
-#[derive(Serialize)]
-struct GeminiRequest {
-    contents: Vec<GeminiContent>,
-}
-#[derive(Serialize)]
-struct GeminiContent {
-    parts: Vec<GeminiPart>,
-}
-#[derive(Serialize)]
-struct GeminiPart {
-    text: String,
-}
-
-#[derive(Deserialize)]
-struct GeminiResponse {
-    candidates: Option<Vec<GeminiCandidate>>,
-}
-#[derive(Deserialize)]
-struct GeminiCandidate {
-    content: GeminiContentResponse,
-}
-#[derive(Deserialize)]
-struct GeminiContentResponse {
-    parts: Vec<GeminiPartResponse>,
-}
-#[derive(Deserialize)]
-struct GeminiPartResponse {
-    text: String,
 }
 
 // --- Main Server ---
@@ -101,43 +55,68 @@ async fn health_check() -> impl IntoResponse {
 
 async fn handle_negotiation(
     State(state): State<Arc<AppState>>,
-    Json(payload): Json<NegotiationRequest>,
+    Json(payload): Json<Value>,
 ) -> impl IntoResponse {
-    // Build a prompt for Gemini based on the negotiation parameters
-    let prompt = format!(
-        "I am negotiating to buy a {} currently priced at ${}, and I want to negotiate it down to ${}. Help me with a negotiation strategy.",
-        payload.item, payload.initial_price, payload.target_price
-    );
+    // Build a prompt from the request payload
+    let prompt = match &payload {
+        Value::Object(map) => {
+            let item = map.get("item")
+                .and_then(|v| v.as_str())
+                .unwrap_or("item");
+            let initial_price = map.get("initialPrice")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let target_price = map.get("targetPrice")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            
+            format!(
+                "I am negotiating to buy a {} currently priced at ${}, and I want to negotiate it down to ${}. Help me with a negotiation strategy.",
+                item, initial_price, target_price
+            )
+        }
+        _ => "Please provide negotiation details with item, initialPrice, and targetPrice.".to_string(),
+    };
 
     let url = format!(
         "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={}",
         state.gemini_api_key
     );
 
-    let gemini_req = GeminiRequest {
-        contents: vec![GeminiContent {
-            parts: vec![GeminiPart { text: prompt }],
-        }],
-    };
+    let gemini_req = json!({
+        "contents": [{
+            "parts": [{
+                "text": prompt
+            }]
+        }]
+    });
 
     let res = match state.http_client.post(&url).json(&gemini_req).send().await {
         Ok(r) => r,
-        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to reach Gemini API").into_response(),
+        Err(e) => {
+            eprintln!("❌ Failed to reach Gemini API: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"reply": "Failed to reach Gemini API"}))).into_response();
+        }
     };
 
-    let gemini_data: GeminiResponse = match res.json().await {
-        Ok(data) => data,
-        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to parse Gemini response").into_response(),
-    };
+    match res.json::<Value>().await {
+        Ok(gemini_data) => {
+            let reply_text = gemini_data
+                .get("candidates")
+                .and_then(|c| c.get(0))
+                .and_then(|c| c.get("content"))
+                .and_then(|c| c.get("parts"))
+                .and_then(|p| p.get(0))
+                .and_then(|p| p.get("text"))
+                .and_then(|t| t.as_str())
+                .unwrap_or("No response generated from Gemini API");
 
-    let reply_text = gemini_data
-        .candidates
-        .and_then(|mut c| c.pop())
-        .and_then(|mut c| c.content.parts.pop())
-        .map(|p| p.text)
-        .unwrap_or_else(|| "No response generated".to_string());
-
-    let response = NegotiationResponse { reply: reply_text };
-    (StatusCode::OK, Json(response)).into_response()
+            (StatusCode::OK, Json(json!({"reply": reply_text}))).into_response()
+        }
+        Err(e) => {
+            eprintln!("❌ Failed to parse Gemini response: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"reply": "Failed to parse Gemini response"}))).into_response()
+        }
+    }
 }
 
